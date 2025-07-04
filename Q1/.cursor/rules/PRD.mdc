@@ -1,0 +1,140 @@
+---
+alwaysApply: true
+---
+## 4 Detailed Requirements
+### 4.1 Functional
+1. **Tool Discovery**: All tools expose JSON schemas enabling auto-completion in IDEs.  
+2. **Time-Zone Handling**: Use IANA tz names and convert to UTC for storage.  
+3. **Conflict Prevention**: `create_meeting` must fail gracefully if conflicts detected.
+4. **LLM-assisted Responses**: If the caller passes `explain=true`, server invokes LLM to generate a friendly summary (e.g., "This slot works for everyone because …").
+
+### 4.2 Non-Functional
+* **Performance**: Average tool call ≤ 250 ms for DB-only operations; ≤ 2 s for LLM-backed responses.  
+* **Scalability**: Handle 20 concurrent tool calls (async I/O).  
+* **Security**: Secrets via env vars; PII redaction before LLM calls.  
+* **Extensibility**: New tool in < 50 LOC.
+
+---
+
+## 5 Tech Stack
+| Layer | Choice | Rationale |
+|-------|--------|-----------|
+| Language | Python 3.11 | Fast adoption & FastMCP support |
+| MCP Framework | **fastmcp** | Decorator syntax, async, SSE transport |
+| DB | SQLite (MVP) → PostgreSQL (phase-2) | Zero-config local dev; easy upgrade |
+| Time Lib | `pendulum` | Robust tz & DST handling |
+| LLM Provider | **OpenAI GPT-4o** (default) | High-quality generation & broadly available |
+| HTTP client | `httpx` | Async requests |
+| Testing | `pytest`, `pytest-asyncio`, `fastmcp.Client` | Unit + protocol tests |
+| Lint/CI | `ruff`, GitHub Actions | Consistent code quality |
+
+> **LLM Flexibility**  
+> An adapter in `src/llm_client.py` will support `OPENAI`, `ANTHROPIC`, or `GEMINI` selectable via `LLM_PROVIDER` env var. Default is `OPENAI`.
+
+---
+
+## 6 Data Model
+```
+User
+ ├─ user_id : TEXT (PK)
+ ├─ time_zone : TEXT
+ └─ preferences : JSON
+
+Meeting
+ ├─ meeting_id : TEXT (PK)
+ ├─ title : TEXT
+ ├─ start_time_utc : DATETIME
+ ├─ end_time_utc : DATETIME
+ ├─ participants : JSON  -- list of user_ids
+ ├─ agenda : TEXT
+ └─ effectiveness_score : REAL
+```
+
+Indices on `User.time_zone` and `Meeting.start_time_utc` for quick look-ups.
+
+---
+
+## 7 Implementation Plan (MVP)
+| Step | Task | Owner | Notes |
+|------|------|-------|-------|
+| 1 | Scaffold repo & venv; add `fastmcp`, `pendulum` | Dev | `src/server.py`, `src/models.py` |
+| 2 | Build data models with SQLModel + seed script | Dev | `scripts/seed_db.py` |
+| 3 | Implement `create_meeting` (conflict check) | Dev | Unit tests for overlap logic |
+| 4 | Implement `find_optimal_slots` | Dev | Greedy algorithm; later ML upgrade |
+| 5 | Implement `detect_scheduling_conflicts` | Dev | Returns list of conflicting IDs |
+| 6 | Integrate `llm_client.py` with OpenAI GPT-4o | Dev | Env: `OPENAI_API_KEY` |
+| 7 | Add CLI script `start_server.py` supporting stdio & HTTP | Dev | `fastmcp.run()` |
+| 8 | Write tests (≥ 80 % coverage) | QA | Use in-memory SQLite |
+| 9 | Write README & `D.mdc` | PM | Completed here |
+| 10 | Demo with Cursor client | Dev | Record GIF |
+
+Total MVP timeline: **2 weeks**.
+
+---
+
+## 8 Phase-2 Roadmap
+| Feature | Description | Target Week |
+|---------|-------------|------------|
+| Meeting Analytics | `analyze_meeting_patterns`, charts resource | 3 |
+| Workload Balance | `calculate_workload_balance` + pie chart JSON | 4 |
+| Agenda Suggestion | LLM-powered agenda generator | 4 |
+| Effectiveness Scoring | Heuristic + LLM evaluation | 5 |
+| Optimise Schedule | Batch suggestions & auto-reschedule tool | 6 |
+| Swap DB to Postgres | Prod-ready persistence & migrations | 6 |
+| OAuth 2.1 | Secure auth for HTTP transport | 7 |
+| External Calendar Sync | Google Calendar API integration (read/write) [[Google Calendar API]] | 8 |
+
+---
+
+## 9 Deployment
+1. **Local Dev**: `python start_server.py stdio` (Cursor auto-detects).  
+2. **Remote Demo**: `uvicorn src.server:app --port 8001` (HTTP + SSE).  
+3. Dockerfile ships with multi-stage build for compact image.
+
+Env vars (example):
+```
+DATABASE_URL=sqlite:///./data/sample_meetings.db
+LLM_PROVIDER=OPENAI
+OPENAI_API_KEY=sk-...
+MCP_SERVER_NAME=Smart Meeting Assistant
+```
+
+---
+
+## 10 Testing Strategy
+* **Unit Tests** for business logic (conflict detection, slot ranking).  
+* **Protocol Tests** using `fastmcp.Client` to simulate Cursor calls.  
+* **Load Test**: `pytest-benchmark` running 50 concurrent `find_optimal_slots` calls.
+
+Coverage gate fails CI below 90 % during main branch merge.
+
+---
+
+## 11 Security & Privacy
+* Never log raw agenda text or PII.  
+* LLM prompts redacted (`user_123` instead of email).  
+* All secrets pulled via dotenv or cloud secrets manager.  
+* Basic rate limiter (20 req/min) to prevent abuse.
+
+---
+
+## 12 Acceptance Criteria
+✅ `create_meeting` prevents conflicts.  
+✅ `find_optimal_slots` returns ≥ 3 ranked ISO 8601 slots.  
+✅ Cursor detects three tools and calls them successfully.  
+✅ All tests & CI pipelines pass.  
+✅ README + `D.mdc` fully document setup & usage.
+
+---
+
+## 13 Decisions (Former Open Questions)
+1. **External Calendar APIs**: We will integrate the Google Calendar API (read/write) in Phase-3 to enable real-time sync with users’ primary calendars [[Google Calendar API]].  
+2. **Meeting Transcripts**: Not available at this stage; effectiveness scoring and agenda generation will rely solely on meeting metadata (titles, durations, attendees).  
+3. **Data-Sharing Constraints**: No policy limitations—meeting content can be sent to the third-party LLM (OpenAI GPT-4o) without additional masking.
+
+---
+
+*End of document*
+
+alwaysApply: false
+---
